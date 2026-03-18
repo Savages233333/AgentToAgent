@@ -1,0 +1,19 @@
+# Runtime dependencies
+# Add packages here, e.g.:
+# requests>=2.31
+fastapi[standard]>=0.110.0
+uvicorn[standard]>=0.29.0
+sqlalchemy>=2.0.0
+pymysql>=1.1.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+alembic>=1.13.0
+dashscope>=1.20.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.2.0
+langgraph>=0.2.0
+numpy>=1.26.0
+requests>=2.31.0
+langchain-openai>=0.2.0

@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source:*)",
+      "Read(//usr/local/bin/**)",
+      "Bash(pyenv versions:*)",
+      "WebFetch(domain:skillhub-1388575217.cos.ap-guangzhou.myqcloud.com)",
+      "Bash(curl:*)",
+      "Bash(skillhub install:*)",
+      "Bash(/Users/deeplive/.local/bin/skillhub install:*)",
+      "Bash(/Users/deeplive/.local/bin/skillhub --help 2>&1 | head -40)",
+      "Bash(PYTHONHTTPSVERIFY=0 /Users/deeplive/.local/bin/skillhub install sql-toolkit 2>&1)",
+      "Bash(python3:*)",
+      "Bash(sed:*)",
+      "Bash(.venv/bin/python -c \"\nfrom langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder\nfrom langchain.agents import AgentExecutor, create_openai_tools_agent\nprint\\('OK'\\)\n\" 2>&1)",
+      "Bash(.venv/bin/python -c \"\nfrom langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder\nprint\\('prompts OK'\\)\n\" 2>&1 | grep -v Warning | grep -v pydantic | grep -v FieldInfo)"
+    ]
+  }
+}

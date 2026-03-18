@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "sql-toolkit": {
+      "name": "SQL Toolkit",
+      "zip_url": "https://lightmake.site/api/v1/download?slug=sql-toolkit",
+      "source": "skillhub",
+      "version": "1.0.0"
+    }
+  }
+}
