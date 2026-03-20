@@ -1,16 +1,24 @@
+from datetime import datetime,timezone
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from agent_to_agent.models.agentInfo import AgentInfo
 from agent_to_agent.models.agentStateHistory import AgentStateHistory
 from agent_to_agent.factory.agentFactory import AgentFactory
-
+from agent_to_agent.heartbeatmonitor.heartbeatMonitor import HeartbeatMonitor
+from agent_to_agent.models.agentRequest import AgentRequest
 
 class AgentManager:
     def __init__(self, db: Session):
         self.db = db
         self.agent_factory = AgentFactory()
+        # 启动心跳监控（全局单例）
+        # 使用工厂函数创建独立的数据库会话，避免与请求共享 session
+        from agent_to_agent.models import get_db
+        self.db_session_func = get_db
+        self.heartbeat_monitor = HeartbeatMonitor(db_session_func=get_db)  # ← 修改这里
+        self.heartbeat_monitor.start()
 
-    def agentRegister(self, req):
+    def agentRegister(self, req: AgentRequest):
         """
         注册新 agent。
 
@@ -39,7 +47,7 @@ class AgentManager:
         self.db.refresh(agent)
         return {"id": agent.id, "status": agent.status}
 
-    def connect(self, req):
+    def connect(self, req: AgentRequest):
         """
         唤醒 agent，建立运行时连接。
 
@@ -59,7 +67,7 @@ class AgentManager:
                 .first()
             )
             if not agent:
-                raise HTTPException(status_code=404, detail="agent没有被注册喔")
+                raise HTTPException(status_code=404, detail="agent 没有被注册喔")
 
             old_status = agent.status
 
@@ -70,10 +78,12 @@ class AgentManager:
                 name=agent.name,
                 model=agent.model,
                 api_key=agent.api_key,
+                db_session_func=self.db_session_func,
             )
 
             # 更新数据库状态
             agent.status = "wake"
+            agent.last_active = datetime.now(timezone.utc)
             self.db.add(AgentStateHistory(
                 agent_id=agent.id,
                 old_status=old_status,
@@ -90,13 +100,46 @@ class AgentManager:
             self.db.rollback()
             raise HTTPException(status_code=500, detail=str(e))
 
-    def use(self, req):
-        try :
-            pass
-        except HTTPException:
-            raise
-        graph = self.agent_factory.get(req.user_id)
-        return graph.invoke(req.message)
+    def use(self, req: AgentRequest):
+        # 查询 agent 记录
+        agent_record = self.db.query(AgentInfo).filter(
+            AgentInfo.id == req.agent_id
+        ).first()
+
+        if not agent_record:
+            raise HTTPException(status_code=404, detail="agent 不存在")
+
+        # 更新状态为 active
+        if agent_record.status == "wake":
+            self.db.add(AgentStateHistory(
+                agent_id=agent_record.id,
+                old_status=agent_record.status,
+                new_status="active",
+                reason="agent started using",
+            ))
+            agent_record.status = "active"
+            agent_record.last_active = datetime.now(timezone.utc)
+            self.db.commit()
+
+        # 调用 agent 执行
+        agent = self.agent_factory.get(req.user_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="agent 未激活")
+
+        result = agent.invoke(req.messages)
+
+        # 使用完成后恢复为 wake 状态
+        agent_record.status = "wake"
+        agent_record.last_active = datetime.now(timezone.utc)
+        self.db.add(AgentStateHistory(
+            agent_id=agent_record.id,
+            old_status="active",
+            new_status="wake",
+            reason="agent finished using",
+        ))
+        self.db.commit()
+
+        return result
 
     def destroy(self, account_id):
         pass

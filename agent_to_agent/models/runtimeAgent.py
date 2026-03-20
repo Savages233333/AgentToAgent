@@ -1,6 +1,7 @@
 
-
-from typing import Optional
+from datetime import datetime,timezone
+from typing import Callable, Optional
+from sqlalchemy.orm import Session
 
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
@@ -22,6 +23,7 @@ class RuntimeAgent:
         model: str,
         api_key: str,
         system_prompt: Optional[str] = None,
+        db_session_func: Optional[Callable[[], Session]] = None,  # ← 改为工厂函数
     ):
         """
         初始化 RuntimeAgent。
@@ -32,6 +34,7 @@ class RuntimeAgent:
             name:          Agent 名称（对应注册时的 model_name）。
             model:         模型名称，传入 ChatOpenAI 使用。
             api_key:       模型 API Key，用于鉴权。
+            db_session:    数据库会话，用于心跳更新 last_active。
             system_prompt: 系统提示词，构建 agent 时注入。
         """
         self.agent_id = agent_id
@@ -40,15 +43,36 @@ class RuntimeAgent:
         self.model = model
         self.api_key = api_key
         self.system_prompt = system_prompt
+        self.db_session_func = db_session_func
 
         # 当前挂载的 skill 列表，技能变动后需重建agent
-        self._skills: list[BaseTool] = SkillsManager().init_base_skills()
+        self._skills: list[BaseTool] = SkillsManager().init_base_skills(self.agent_id, self.user_id, db_session_func)
 
         # 大模型实例，所有推理请求均通过此 LLM 发起
         self._llm = ChatOpenAI(model=self.model, temperature=0,api_key=self.api_key) # 如需要流式输出设为 True
 
         # 首次构建 agent（初始挂载 DownloadSkillTool，运行时按需追加）
         self._agent_entity = self._build_agent_entity()
+
+    def _update_last_active(self):
+        """更新数据库中的 last_active 时间戳。"""
+        if self.db_session_func:
+            try:
+                from agent_to_agent.models.agentInfo import AgentInfo
+                from agent_to_agent.models import get_db
+                # 获取新的 session
+                db = next(self.db_session_func())
+                try:
+                    db.query(AgentInfo).filter(
+                        AgentInfo.id == self.agent_id
+                    ).update({
+                        "last_active": datetime.now(timezone.utc)
+                    })
+                    db.commit()
+                finally:
+                    db.close()  # ← 确保关闭
+            except Exception as e:
+                print(f"[RuntimeAgent:{self.name}] 更新 last_active 失败：{e}")
 
 
     def _build_agent_entity(self):
@@ -101,6 +125,8 @@ class RuntimeAgent:
     # ------------------------------------------------------------------
 
     def invoke(self, user_message: str) -> str:
+        self._update_last_active()
+
         """先按任务加载所需 skill，再调用 agent 执行推理，返回文本结果。"""
         self.load_skills_and_rebuild_agent(
             user_message

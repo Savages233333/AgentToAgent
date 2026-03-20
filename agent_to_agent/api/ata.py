@@ -2,17 +2,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from agent_to_agent.models import get_db
 from agent_to_agent.services.agentManager import AgentManager
-from pydantic import BaseModel
+from agent_to_agent.models.agentRequest import AgentRequest
 
 router = APIRouter()
 
 
-class AgentRequest(BaseModel):
-    user_id: str
-    api_key: str
-    agent_id: int
-    model_name: str
-    messages: str
+
 
 
 @router.post("/agentRegister")

@@ -22,7 +22,7 @@ class AgentFactory:
                     cls._instance._container: dict[int, RuntimeAgent] = {}
         return cls._instance
 
-    def create(self, agent_id: int, user_id: int, name: str, model: str, api_key: str) -> RuntimeAgent:
+    def create(self, agent_id: int, user_id: int, name: str, model: str, api_key: str,db_session_func=None,) -> RuntimeAgent:
         """创建 RuntimeAgent 并存入容器，若已存在则覆盖。"""
         agent = RuntimeAgent(
             agent_id=agent_id,
@@ -30,6 +30,7 @@ class AgentFactory:
             name=name,
             model=model,
             api_key=api_key,
+            db_session_func=db_session_func,
         )
         self._container[user_id] = agent
         return agent
