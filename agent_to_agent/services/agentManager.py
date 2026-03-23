@@ -229,102 +229,6 @@ class AgentManager:
             "target_agent_id": decision.target_agent_id,
         }
 
-    def create_task(
-        self,
-        task_type: str,
-        source_agent_id: int,
-        target_agent_id: int,
-        payload: dict | None = None,
-        requires_user_action: bool = False,
-        priority: int = 0,
-        status: str = "pending",
-    ) -> dict:
-        """创建一条 Agent 任务并立即持久化。"""
-        task = self.task_service.create_task(
-            task_type=task_type,
-            source_agent_id=source_agent_id,
-            target_agent_id=target_agent_id,
-            payload=payload,
-            requires_user_action=requires_user_action,
-            priority=priority,
-            status=status,
-        )
-        self.db.commit()
-        self.db.refresh(task)
-        return {
-            "task_id": task.id,
-            "task_type": task.task_type,
-            "status": task.status,
-            "source_agent_id": task.source_agent_id,
-            "target_agent_id": task.target_agent_id,
-            "requires_user_action": task.requires_user_action,
-        }
-
-    def update_task_status(
-        self,
-        task_id: int,
-        status: str,
-        event_type: str = "status_changed",
-        event_payload: dict | None = None,
-    ) -> dict:
-        """更新任务状态并记录对应事件。"""
-        task = self.task_service.update_task_status(
-            task_id=task_id,
-            status=status,
-            event_type=event_type,
-            event_payload=event_payload,
-        )
-        self.db.commit()
-        self.db.refresh(task)
-        return {
-            "task_id": task.id,
-            "status": task.status,
-        }
-
-    def list_pending_tasks(self, target_agent_id: int) -> list[dict]:
-        """查询目标 Agent 的待处理任务列表。"""
-        tasks = self.task_service.list_pending_tasks_for_agent(target_agent_id)
-        return [
-            {
-                "task_id": task.id,
-                "task_type": task.task_type,
-                "status": task.status,
-                "source_agent_id": task.source_agent_id,
-                "target_agent_id": task.target_agent_id,
-                "priority": task.priority,
-                "requires_user_action": task.requires_user_action,
-            }
-            for task in tasks
-        ]
-
-    def dispatch_task(
-        self,
-        task_type: str,
-        source_agent_id: int,
-        target_agent_id: int,
-        payload: dict | None = None,
-        requires_user_action: bool = False,
-        priority: int = 0,
-        permission_action: str = "assign_task",
-    ) -> dict:
-        """按目标 Agent 当前状态投递任务，并返回统一的送达结果。"""
-        result = self.task_dispatch_service.dispatch_task(
-            task_type=task_type,
-            source_agent_id=source_agent_id,
-            target_agent_id=target_agent_id,
-            payload=payload,
-            requires_user_action=requires_user_action,
-            priority=priority,
-            permission_action=permission_action,
-        )
-        self.db.commit()
-        return {
-            "task_id": result.task_id,
-            "delivery_status": result.delivery_status,
-            "target_status": result.target_status,
-            "reason": result.reason,
-        }
-
     def request_connection(
         self,
         source_agent_id: int,
@@ -474,14 +378,56 @@ class AgentManager:
             "reason": "连接申请已拒绝",
         }
 
-    def list_connection_requests(self, target_agent_id: int) -> list[dict]:
-        """查询目标 Agent 当前待处理的连接申请任务。"""
+    def resolve_agent_id(
+        self,
+        target_agent_id: int | None = None,
+        target_agent_name: str | None = None,
+    ) -> int:
+        """按 ID 或名称解析目标 Agent 的唯一标识。"""
+        if target_agent_id is not None:
+            self._get_agent_or_404(target_agent_id)
+            return target_agent_id
+
+        if not target_agent_name:
+            raise HTTPException(status_code=400, detail="必须提供 target_agent_id 或 target_agent_name")
+
+        agent = (
+            self.db.query(AgentInfo)
+            .filter(AgentInfo.name == target_agent_name)
+            .order_by(AgentInfo.id.asc())
+            .first()
+        )
+        if not agent:
+            raise HTTPException(status_code=404, detail=f"未找到名称为 {target_agent_name} 的 agent")
+        return agent.id
+
+    def list_connection_requests_for_tool(
+        self,
+        target_agent_id: int,
+        include_waiting_online: bool = True,
+    ) -> list[dict]:
+        """供 RuntimeAgent 工具调用的连接申请查询入口。"""
+        return self._list_connection_requests(
+            target_agent_id=target_agent_id,
+            include_waiting_online=include_waiting_online,
+        )
+
+    def _list_connection_requests(
+        self,
+        target_agent_id: int,
+        include_waiting_online: bool,
+    ) -> list[dict]:
+        """按条件筛选目标 Agent 的连接申请任务。"""
+        statuses = ["waiting_user", "delivered"]
+        if include_waiting_online:
+            statuses.append("waiting_target_online")
+
         tasks = (
             self.db.query(AgentTask)
             .filter(
                 AgentTask.target_agent_id == target_agent_id,
                 AgentTask.task_type == "friend_request",
-                AgentTask.status.in_(["waiting_user", "waiting_target_online", "delivered"]),
+                AgentTask.status.in_(statuses),
             )
             .order_by(AgentTask.created_at.asc())
             .all()

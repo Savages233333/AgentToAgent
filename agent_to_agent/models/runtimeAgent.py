@@ -76,8 +76,18 @@ class RuntimeAgent:
 
 
     def _build_agent_entity(self):
-        # 构建 Agent（使用当前 _skills 列表）
-        return create_agent(self._llm, self._skills, system_prompt="你是一个有用的助手，可以使用提供的工具来帮助用户。")
+        """基于当前工具集合构建 RuntimeAgent 的执行实体。"""
+        # 基础系统提示会显式告知 Agent：
+        # 连接申请、权限检查、任务查询等系统动作应优先通过工具完成，而不是凭空假设结果。
+        return create_agent(
+            self._llm,
+            self._skills,
+            system_prompt=(
+                "你是一个有用的助手，可以使用提供的工具来帮助用户。"
+                "当用户涉及 Agent 之间的好友连接、权限判断、查看连接申请或响应连接申请时，"
+                "必须优先调用系统工具获取真实结果。"
+            ),
+        )
 
 
     def list_skills(self) -> list[str]:
