@@ -9,3 +9,7 @@ class AgentRequest(BaseModel):
     role_type: str | None = None
     level_rank: int | None = None
     manager_agent_id: int | None = None
+    callback_url: str | None = None
+    callback_enabled: bool | None = None
+    callback_secret: str | None = None
+    callback_timeout_seconds: int | None = None

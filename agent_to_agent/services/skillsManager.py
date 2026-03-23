@@ -2,7 +2,10 @@ from agent_to_agent.skillsCenter.baseskills.downloadSkillTool import DownloadSki
 from agent_to_agent.skillsCenter.baseskills.heartbeatTool import HeartbeatTool
 from agent_to_agent.skillsCenter.baseskills.agentConnectionTool import (
     CheckAgentPermissionTool,
+    GetTaskDetailTool,
     ListConnectionRequestsTool,
+    ListMyTasksTool,
+    ReadAgentPermissionTool,
     RequestConnectionTool,
     RespondConnectionRequestTool,
 )
@@ -26,4 +29,7 @@ class SkillsManager:
             RespondConnectionRequestTool(agent_id=agent_id, db_session_func=db_session_func),
             ListConnectionRequestsTool(agent_id=agent_id, db_session_func=db_session_func),
             CheckAgentPermissionTool(agent_id=agent_id, db_session_func=db_session_func),
+            ReadAgentPermissionTool(agent_id=agent_id, db_session_func=db_session_func),
+            ListMyTasksTool(agent_id=agent_id, db_session_func=db_session_func),
+            GetTaskDetailTool(agent_id=agent_id, db_session_func=db_session_func),
         ]

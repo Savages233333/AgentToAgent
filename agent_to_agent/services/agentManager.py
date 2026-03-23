@@ -11,6 +11,7 @@ from agent_to_agent.services.permissionFileService import PermissionFileService
 from agent_to_agent.services.permissionService import PermissionService
 from agent_to_agent.services.agentTaskService import AgentTaskService
 from agent_to_agent.services.agentTaskDispatchService import AgentTaskDispatchService
+from agent_to_agent.services.agentCallbackService import AgentCallbackService
 
 class AgentManager:
     def __init__(self, db: Session):
@@ -32,6 +33,7 @@ class AgentManager:
             task_service=self.task_service,
             permission_service=self.permission_service,
         )
+        self.callback_service = AgentCallbackService()
 
     def agentRegister(self, req: AgentRequest):
         """
@@ -50,6 +52,10 @@ class AgentManager:
                 role_type=req.role_type,
                 level_rank=req.level_rank,
                 manager_agent_id=req.manager_agent_id,
+                callback_url=req.callback_url,
+                callback_enabled=req.callback_enabled if req.callback_enabled is not None else False,
+                callback_secret=req.callback_secret,
+                callback_timeout_seconds=req.callback_timeout_seconds or 5,
                 model="qwen3-max",
                 api_key=req.api_key,
                 status="new",
@@ -94,6 +100,8 @@ class AgentManager:
                 "role_type": agent.role_type,
                 "level_rank": agent.level_rank,
                 "manager_agent_id": agent.manager_agent_id,
+                "callback_url": agent.callback_url,
+                "callback_enabled": agent.callback_enabled,
                 "permission_file": str(permission_path),
             }
         except Exception as e:
@@ -153,12 +161,21 @@ class AgentManager:
             delivered_tasks = self.task_dispatch_service.deliver_pending_tasks_on_connect(
                 target_agent_id=agent.id,
             )
+            callback_deliveries = self._retry_pending_response_callbacks(agent)
+            inbox_summary = self.get_task_inbox_summary(agent.id)
             self.db.commit()
             self.db.refresh(agent)
+            runtime_agent = self.agent_factory.get(agent.user_id)
             return {
                 "id": agent.id,
                 "status": agent.status,
                 "delivered_tasks": delivered_tasks,
+                "callback_deliveries": callback_deliveries,
+                "pending_task_count": inbox_summary["pending_task_count"],
+                "pending_task_preview": inbox_summary["pending_task_preview"],
+                "pending_system_message_count": (
+                    runtime_agent.pending_system_message_count() if runtime_agent else 0
+                ),
             }
 
         except HTTPException:
@@ -227,6 +244,72 @@ class AgentManager:
             "relation": decision.relation,
             "source_agent_id": decision.source_agent_id,
             "target_agent_id": decision.target_agent_id,
+        }
+
+    def read_agent_permission(
+        self,
+        target_agent_id: int | None = None,
+        target_agent_name: str | None = None,
+    ) -> dict:
+        """读取指定目标 Agent 的权限文件内容。"""
+        resolved_target_id = self.resolve_agent_id(
+            target_agent_id=target_agent_id,
+            target_agent_name=target_agent_name,
+        )
+        summary = self.permission_file_service.summarize_permission_file(resolved_target_id)
+        summary["target_agent_id"] = resolved_target_id
+        return summary
+
+    def list_my_tasks(
+        self,
+        target_agent_id: int,
+        include_completed: bool = False,
+    ) -> list[dict]:
+        """查询指定 Agent 的任务收件箱。"""
+        statuses = None
+        if not include_completed:
+            statuses = ["pending", "queued", "delivered", "waiting_user", "waiting_target_online"]
+        tasks = self.task_service.list_tasks_for_agent(
+            target_agent_id=target_agent_id,
+            statuses=statuses,
+        )
+        return [self._task_to_dict(task) for task in tasks]
+
+    def get_task_detail(self, task_id: int, requester_agent_id: int) -> dict:
+        """读取某条任务详情及其事件流。"""
+        task = self.task_service.get_task(task_id)
+        if requester_agent_id not in {task.source_agent_id, task.target_agent_id}:
+            raise HTTPException(status_code=403, detail="当前 Agent 无权查看该任务")
+
+        events = self.task_service.list_task_events(task_id)
+        detail = self._task_to_dict(task)
+        detail["events"] = [
+            {
+                "event_id": event.id,
+                "event_type": event.event_type,
+                "event_payload": event.event_payload,
+                "created_at": str(event.created_at),
+            }
+            for event in events
+        ]
+        return detail
+
+    def get_task_inbox_summary(self, target_agent_id: int) -> dict:
+        """返回目标 Agent 当前待处理任务的摘要。"""
+        tasks = self.list_my_tasks(target_agent_id=target_agent_id, include_completed=False)
+        preview = [
+            {
+                "task_id": task["task_id"],
+                "task_type": task["task_type"],
+                "status": task["status"],
+                "source_agent_id": task["source_agent_id"],
+                "requires_user_action": task["requires_user_action"],
+            }
+            for task in tasks[:5]
+        ]
+        return {
+            "pending_task_count": len(tasks),
+            "pending_task_preview": preview,
         }
 
     def request_connection(
@@ -345,11 +428,38 @@ class AgentManager:
                     "friend_agent_id": responder_agent.id,
                 },
             )
+            callback_result = self._attempt_response_callback(
+                target_agent=source_agent,
+                response_task_id=response_dispatch.task_id,
+                payload={
+                    "request_task_id": task.id,
+                    "accepted": True,
+                    "message": response_message,
+                    "source_agent_id": responder_agent.id,
+                    "source_agent_name": responder_agent.name,
+                    "target_agent_id": source_agent.id,
+                    "target_agent_name": source_agent.name,
+                    "friend_agent_id": responder_agent.id,
+                    "friend_agent_name": responder_agent.name,
+                },
+            )
+            self._push_runtime_feedback_to_agent(
+                target_agent=source_agent,
+                from_agent=responder_agent,
+                event_type="friend_request_response",
+                payload={
+                    "accepted": True,
+                    "message": response_message,
+                    "friend_agent_id": responder_agent.id,
+                    "friend_agent_name": responder_agent.name,
+                },
+            )
             self.db.commit()
             return {
                 "task_id": task.id,
                 "result": "accepted",
                 "response_delivery_status": response_dispatch.delivery_status,
+                "callback_status": callback_result["status"],
                 "reason": "连接申请已同意，双方已建立好友关系",
             }
 
@@ -370,11 +480,38 @@ class AgentManager:
                 "friend_agent_id": responder_agent.id,
             },
         )
+        callback_result = self._attempt_response_callback(
+            target_agent=source_agent,
+            response_task_id=response_dispatch.task_id,
+            payload={
+                "request_task_id": task.id,
+                "accepted": False,
+                "message": response_message,
+                "source_agent_id": responder_agent.id,
+                "source_agent_name": responder_agent.name,
+                "target_agent_id": source_agent.id,
+                "target_agent_name": source_agent.name,
+                "friend_agent_id": responder_agent.id,
+                "friend_agent_name": responder_agent.name,
+            },
+        )
+        self._push_runtime_feedback_to_agent(
+            target_agent=source_agent,
+            from_agent=responder_agent,
+            event_type="friend_request_response",
+            payload={
+                "accepted": False,
+                "message": response_message,
+                "friend_agent_id": responder_agent.id,
+                "friend_agent_name": responder_agent.name,
+            },
+        )
         self.db.commit()
         return {
             "task_id": task.id,
             "result": "rejected",
             "response_delivery_status": response_dispatch.delivery_status,
+            "callback_status": callback_result["status"],
             "reason": "连接申请已拒绝",
         }
 
@@ -455,3 +592,140 @@ class AgentManager:
         if not agent:
             raise HTTPException(status_code=404, detail=f"agent 不存在：{agent_id}")
         return agent
+
+    def _push_runtime_feedback_to_agent(
+        self,
+        target_agent: AgentInfo,
+        from_agent: AgentInfo,
+        event_type: str,
+        payload: dict,
+    ) -> None:
+        """如果目标 Agent 当前在线，则把系统反馈直接注入其运行时消息收件箱。"""
+        runtime_agent = self.agent_factory.get(target_agent.user_id)
+        if not runtime_agent:
+            return
+
+        runtime_agent.receive_system_message(
+            message_type="system_event",
+            event_type=event_type,
+            payload=payload,
+            from_agent_id=from_agent.id,
+            from_agent_name=from_agent.name,
+        )
+
+    def _attempt_response_callback(self, target_agent: AgentInfo, response_task_id: int | None, payload: dict) -> dict:
+        """尝试把响应任务回调到目标 Agent 对应的 User 系统。"""
+        if response_task_id is None:
+            return {"status": "not_created", "reason": "响应任务未创建"}
+
+        response_task = self.task_service.get_task(response_task_id)
+        self.task_service.update_task_status(
+            task_id=response_task.id,
+            status="pending_push",
+            event_type="pending_push",
+            event_payload={"reason": "准备尝试回调 User 系统"},
+        )
+        callback_result = self.callback_service.push_callback(
+            agent=target_agent,
+            event_type="friend_request_response",
+            delivery_id=f"task-{response_task.id}",
+            payload=payload,
+        )
+        if callback_result.success:
+            self.task_service.update_task_status(
+                task_id=response_task.id,
+                status="push_success",
+                event_type="push_success",
+                event_payload={
+                    "reason": callback_result.reason,
+                    "status_code": callback_result.status_code,
+                },
+            )
+            self.task_service.update_task_status(
+                task_id=response_task.id,
+                status="done",
+                event_type="done",
+                event_payload={"reason": "回调成功，响应任务完成"},
+            )
+            return {"status": "push_success", "reason": callback_result.reason}
+
+        fallback_status = "waiting_target_online"
+        if target_agent.callback_enabled and target_agent.callback_url:
+            fallback_status = "push_failed"
+
+        self.task_service.update_task_status(
+            task_id=response_task.id,
+            status=fallback_status,
+            event_type=fallback_status,
+            event_payload={
+                "reason": callback_result.reason,
+                "status_code": callback_result.status_code,
+            },
+        )
+        return {"status": fallback_status, "reason": callback_result.reason}
+
+    def _retry_pending_response_callbacks(self, target_agent: AgentInfo) -> list[dict]:
+        """在目标 Agent 上线时补偿之前未完成的响应回调。"""
+        tasks = (
+            self.db.query(AgentTask)
+            .filter(
+                AgentTask.target_agent_id == target_agent.id,
+                AgentTask.task_type == "friend_request_response",
+                AgentTask.status.in_(["push_failed", "waiting_target_online", "pending_push"]),
+            )
+            .order_by(AgentTask.created_at.asc())
+            .all()
+        )
+        results: list[dict] = []
+        for task in tasks:
+            callback_result = self.callback_service.push_callback(
+                agent=target_agent,
+                event_type="friend_request_response",
+                delivery_id=f"task-{task.id}",
+                payload=task.payload or {},
+            )
+            if callback_result.success:
+                self.task_service.update_task_status(
+                    task_id=task.id,
+                    status="push_success",
+                    event_type="push_success",
+                    event_payload={
+                        "reason": callback_result.reason,
+                        "status_code": callback_result.status_code,
+                    },
+                )
+                self.task_service.update_task_status(
+                    task_id=task.id,
+                    status="done",
+                    event_type="done",
+                    event_payload={"reason": "上线补偿回调成功"},
+                )
+                results.append({"task_id": task.id, "status": "push_success"})
+            else:
+                self.task_service.update_task_status(
+                    task_id=task.id,
+                    status="push_failed",
+                    event_type="push_failed",
+                    event_payload={
+                        "reason": callback_result.reason,
+                        "status_code": callback_result.status_code,
+                    },
+                )
+                results.append({"task_id": task.id, "status": "push_failed"})
+        return results
+
+    @staticmethod
+    def _task_to_dict(task: AgentTask) -> dict:
+        """把任务 ORM 对象转换成适合返回给 Agent 的结构。"""
+        return {
+            "task_id": task.id,
+            "task_type": task.task_type,
+            "status": task.status,
+            "source_agent_id": task.source_agent_id,
+            "target_agent_id": task.target_agent_id,
+            "payload": task.payload,
+            "requires_user_action": task.requires_user_action,
+            "priority": task.priority,
+            "created_at": str(task.created_at),
+            "updated_at": str(task.updated_at),
+        }

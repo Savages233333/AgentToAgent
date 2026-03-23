@@ -39,6 +39,18 @@ class _CheckPermissionInput(_ConnectionTargetInput):
     )
 
 
+class _ReadPermissionInput(_ConnectionTargetInput):
+    pass
+
+
+class _ListMyTasksInput(BaseModel):
+    include_completed: bool = Field(default=False, description="是否包含已完成任务")
+
+
+class _GetTaskDetailInput(BaseModel):
+    task_id: int = Field(description="要查看详情的任务 ID")
+
+
 class RequestConnectionTool(BaseTool):
     """让当前 RuntimeAgent 代表自己向目标 Agent 发起好友连接申请。"""
 
@@ -205,3 +217,110 @@ class CheckAgentPermissionTool(BaseTool):
             target_agent_id=target_agent_id,
             target_agent_name=target_agent_name,
         )
+
+
+class ReadAgentPermissionTool(BaseTool):
+    """让当前 RuntimeAgent 读取目标 Agent 的权限文件内容。"""
+
+    name: str = "read_agent_permission"
+    description: str = (
+        "当需要查看目标 Agent 的权限文件内容时使用。"
+        "可以按目标 Agent 名称或 ID 返回其结构化权限摘要。"
+    )
+    args_schema: type[BaseModel] = _ReadPermissionInput
+
+    agent_id: int = Field(exclude=True)
+    db_session_func: Optional[Callable[[], Session]] = None
+
+    def _run(
+        self,
+        target_agent_id: int | None = None,
+        target_agent_name: str | None = None,
+    ) -> str:
+        """读取目标 Agent 的权限文件摘要。"""
+        from agent_to_agent.services.agentManager import AgentManager
+
+        db = next(self.db_session_func())
+        try:
+            manager = AgentManager(db)
+            result = manager.read_agent_permission(
+                target_agent_id=target_agent_id,
+                target_agent_name=target_agent_name,
+            )
+            return str(result)
+        finally:
+            db.close()
+
+    async def _arun(
+        self,
+        target_agent_id: int | None = None,
+        target_agent_name: str | None = None,
+    ) -> str:
+        return self._run(
+            target_agent_id=target_agent_id,
+            target_agent_name=target_agent_name,
+        )
+
+
+class ListMyTasksTool(BaseTool):
+    """让当前 RuntimeAgent 查看自己的任务收件箱。"""
+
+    name: str = "list_my_tasks"
+    description: str = (
+        "当用户想查看当前 Agent 的待处理任务、好友申请或系统通知时使用。"
+        "会返回当前 Agent 的任务收件箱列表。"
+    )
+    args_schema: type[BaseModel] = _ListMyTasksInput
+
+    agent_id: int = Field(exclude=True)
+    db_session_func: Optional[Callable[[], Session]] = None
+
+    def _run(self, include_completed: bool = False) -> str:
+        """列出当前 Agent 的任务收件箱。"""
+        from agent_to_agent.services.agentManager import AgentManager
+
+        db = next(self.db_session_func())
+        try:
+            manager = AgentManager(db)
+            result = manager.list_my_tasks(
+                target_agent_id=self.agent_id,
+                include_completed=include_completed,
+            )
+            return str(result)
+        finally:
+            db.close()
+
+    async def _arun(self, include_completed: bool = False) -> str:
+        return self._run(include_completed=include_completed)
+
+
+class GetTaskDetailTool(BaseTool):
+    """让当前 RuntimeAgent 查看一条具体任务及其事件流。"""
+
+    name: str = "get_task_detail"
+    description: str = (
+        "当用户想查看某条任务的详情时使用。"
+        "可以返回任务内容、当前状态以及事件历史。"
+    )
+    args_schema: type[BaseModel] = _GetTaskDetailInput
+
+    agent_id: int = Field(exclude=True)
+    db_session_func: Optional[Callable[[], Session]] = None
+
+    def _run(self, task_id: int) -> str:
+        """读取指定任务的详情。"""
+        from agent_to_agent.services.agentManager import AgentManager
+
+        db = next(self.db_session_func())
+        try:
+            manager = AgentManager(db)
+            result = manager.get_task_detail(
+                task_id=task_id,
+                requester_agent_id=self.agent_id,
+            )
+            return str(result)
+        finally:
+            db.close()
+
+    async def _arun(self, task_id: int) -> str:
+        return self._run(task_id=task_id)

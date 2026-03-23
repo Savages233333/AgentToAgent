@@ -110,3 +110,14 @@ class AgentTaskService:
             .order_by(AgentTaskEvent.created_at.asc())
             .all()
         )
+
+    def list_tasks_for_agent(
+        self,
+        target_agent_id: int,
+        statuses: list[str] | None = None,
+    ) -> list[AgentTask]:
+        """按状态查询目标 Agent 的任务列表。"""
+        query = self.db.query(AgentTask).filter(AgentTask.target_agent_id == target_agent_id)
+        if statuses:
+            query = query.filter(AgentTask.status.in_(statuses))
+        return query.order_by(AgentTask.priority.desc(), AgentTask.created_at.asc()).all()

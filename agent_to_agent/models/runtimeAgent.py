@@ -44,6 +44,8 @@ class RuntimeAgent:
         self.api_key = api_key
         self.system_prompt = system_prompt
         self.db_session_func = db_session_func
+        # 系统内部事件收件箱，用于承载其他 Agent 回传给当前 Agent 的通知。
+        self._system_messages: list[dict] = []
 
         # 当前挂载的 skill 列表，技能变动后需重建agent
         self._skills: list[BaseTool] = SkillsManager().init_base_skills(self.agent_id, self.user_id, db_session_func)
@@ -86,6 +88,7 @@ class RuntimeAgent:
                 "你是一个有用的助手，可以使用提供的工具来帮助用户。"
                 "当用户涉及 Agent 之间的好友连接、权限判断、查看连接申请或响应连接申请时，"
                 "必须优先调用系统工具获取真实结果。"
+                "如果你有 requires_user_action 的待处理任务，也应优先提醒用户处理。"
             ),
         )
 
@@ -93,6 +96,62 @@ class RuntimeAgent:
     def list_skills(self) -> list[str]:
         """返回当前已挂载的 skill 名称列表。"""
         return [s.name for s in self._skills]
+
+    def check_inbox(self) -> list[dict]:
+        """读取当前 Agent 的任务收件箱，用于在上线后快速感知待处理事项。"""
+        if not self.db_session_func:
+            return []
+
+        from agent_to_agent.services.agentManager import AgentManager
+
+        db = next(self.db_session_func())
+        try:
+            manager = AgentManager(db)
+            return manager.list_my_tasks(target_agent_id=self.agent_id, include_completed=False)
+        finally:
+            db.close()
+
+    def receive_system_message(
+        self,
+        message_type: str,
+        event_type: str,
+        payload: dict,
+        from_agent_id: int | None = None,
+        from_agent_name: str | None = None,
+    ) -> None:
+        """接收一条由系统或其他 Agent 注入的内部消息。"""
+        self._system_messages.append(
+            {
+                "message_type": message_type,
+                "event_type": event_type,
+                "payload": payload,
+                "from_agent_id": from_agent_id,
+                "from_agent_name": from_agent_name,
+            }
+        )
+
+    def pending_system_message_count(self) -> int:
+        """返回当前尚未被消费的内部系统消息数量。"""
+        return len(self._system_messages)
+
+    def _consume_system_message_context(self) -> str:
+        """把暂存的系统消息转成当前轮次可消费的上下文，并在消费后清空。"""
+        if not self._system_messages:
+            return ""
+
+        parts: list[str] = []
+        for item in self._system_messages:
+            source = item.get("from_agent_name") or item.get("from_agent_id") or "system"
+            parts.append(
+                f"系统事件: type={item['message_type']}, event={item['event_type']}, "
+                f"from={source}, payload={item['payload']}"
+            )
+
+        self._system_messages.clear()
+        return (
+            "在回答当前用户之前，请先处理以下系统事件，并在合适时优先把结果反馈给用户：\n"
+            + "\n".join(parts)
+        )
 
     # ------------------------------------------------------------------
     # 自动 Skill 加载（接入 SkillCenter）
@@ -138,11 +197,16 @@ class RuntimeAgent:
         self._update_last_active()
 
         """先按任务加载所需 skill，再调用 agent 执行推理，返回文本结果。"""
+        system_context = self._consume_system_message_context()
+        effective_message = user_message
+        if system_context:
+            effective_message = f"{system_context}\n\n用户消息：{user_message}"
+
         self.load_skills_and_rebuild_agent(
-            user_message
+            effective_message
         )
 
-        state = self._agent_entity.invoke({"input": user_message})
+        state = self._agent_entity.invoke({"input": effective_message})
         return state["output"]
 
     # ------------------------------------------------------------------
