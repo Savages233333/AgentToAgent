@@ -4,19 +4,14 @@ from sqlalchemy.orm import Session
 from agent_to_agent.models.agentInfo import AgentInfo
 from agent_to_agent.models.agentStateHistory import AgentStateHistory
 from agent_to_agent.factory.agentFactory import AgentFactory
-from agent_to_agent.heartbeatmonitor.heartbeatMonitor import HeartbeatMonitor
 from agent_to_agent.models.agentRequest import AgentRequest
 
 class AgentManager:
     def __init__(self, db: Session):
         self.db = db
         self.agent_factory = AgentFactory()
-        # 启动心跳监控（全局单例）
-        # 使用工厂函数创建独立的数据库会话，避免与请求共享 session
         from agent_to_agent.models import get_db
         self.db_session_func = get_db
-        self.heartbeat_monitor = HeartbeatMonitor(db_session_func=get_db)  # ← 修改这里
-        self.heartbeat_monitor.start()
 
     def agentRegister(self, req: AgentRequest):
         """

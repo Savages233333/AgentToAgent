@@ -108,3 +108,21 @@ services/agentManager.py (AgentManager)
 | `python-dotenv` + `pydantic-settings` | 配置加载 |
 
 > `dashscope` 包已在 requirements.txt 中保留，但代码已切换为 `langchain-openai`，如不再使用通义原生 SDK 可移除。
+
+---
+
+## 运行模式声明
+
+当前系统明确采用`单实例内存态`运行模型。
+
+含义如下：
+
+1. `AgentFactory` 将运行时 Agent 存储在当前 Python 进程内存中。
+2. 心跳监控器在 FastAPI 应用启动时初始化，并只管理当前进程可见的内存 Agent。
+3. 数据库中的 agent 状态会被多个实例共享，但运行时 Agent 实体不会跨实例共享。
+
+因此，当前实现不适合直接水平扩容为多实例部署。若未来需要支持多实例运行，必须至少完成以下改造：
+
+1. 将运行时 Agent 会话与状态从进程内内存迁移到集中式存储或集中式调度层。
+2. 让心跳、回收和任务路由基于共享状态工作，而不是依赖本地 `AgentFactory`。
+3. 为实例间任务归属、锁竞争和恢复策略建立明确机制。

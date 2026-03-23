@@ -1,6 +1,5 @@
 # Runtime dependencies
-# Add packages here, e.g.:
-# requests>=2.31
+# Keep this file aligned with [project.dependencies] in pyproject.toml.
 fastapi[standard]>=0.110.0
 uvicorn[standard]>=0.29.0
 sqlalchemy>=2.0.0
