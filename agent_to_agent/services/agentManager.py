@@ -12,6 +12,7 @@ from agent_to_agent.services.permissionService import PermissionService
 from agent_to_agent.services.agentTaskService import AgentTaskService
 from agent_to_agent.services.agentTaskDispatchService import AgentTaskDispatchService
 from agent_to_agent.services.agentCallbackService import AgentCallbackService
+from agent_to_agent.services.taskPresentationService import TaskPresentationService
 
 class AgentManager:
     def __init__(self, db: Session):
@@ -34,6 +35,7 @@ class AgentManager:
             permission_service=self.permission_service,
         )
         self.callback_service = AgentCallbackService()
+        self.task_presentation_service = TaskPresentationService()
 
     def agentRegister(self, req: AgentRequest):
         """
@@ -163,14 +165,14 @@ class AgentManager:
             )
             callback_deliveries = self._retry_pending_response_callbacks(agent)
             inbox_summary = self.get_task_inbox_summary(agent.id)
-            self.db.commit()
-            self.db.refresh(agent)
             runtime_agent = self.agent_factory.get(agent.user_id)
             if runtime_agent and inbox_summary["pending_task_count"] > 0:
                 self._push_inbox_summary_to_agent(
                     target_agent=agent,
                     inbox_summary=inbox_summary,
                 )
+            self.db.commit()
+            self.db.refresh(agent)
             return {
                 "id": agent.id,
                 "status": agent.status,
@@ -269,15 +271,25 @@ class AgentManager:
         self,
         target_agent_id: int,
         include_completed: bool = False,
+        view: str = "inbox",
     ) -> list[dict]:
         """查询指定 Agent 的任务收件箱。"""
-        statuses = None
-        if not include_completed:
-            statuses = ["pending", "queued", "delivered", "waiting_user", "waiting_target_online"]
-        tasks = self.task_service.list_tasks_for_agent(
-            target_agent_id=target_agent_id,
-            statuses=statuses,
-        )
+        if view == "inbox":
+            tasks = self.task_service.list_inbox_tasks(target_agent_id=target_agent_id)
+        elif view == "notifications":
+            tasks = self.task_service.list_notification_tasks(target_agent_id=target_agent_id)
+        elif view == "history":
+            tasks = self.task_service.list_history_tasks(target_agent_id=target_agent_id)
+        elif view == "failed":
+            tasks = self.task_service.list_failed_tasks(target_agent_id=target_agent_id)
+        else:
+            statuses = None
+            if not include_completed:
+                statuses = ["pending", "queued", "delivered", "waiting_user", "waiting_target_online"]
+            tasks = self.task_service.list_tasks_for_agent(
+                target_agent_id=target_agent_id,
+                statuses=statuses,
+            )
         return [self._task_to_dict(task) for task in tasks]
 
     def get_task_detail(self, task_id: int, requester_agent_id: int) -> dict:
@@ -286,6 +298,7 @@ class AgentManager:
         if requester_agent_id not in {task.source_agent_id, task.target_agent_id}:
             raise HTTPException(status_code=403, detail="当前 Agent 无权查看该任务")
 
+        self.task_service.mark_task_read(task_id)
         events = self.task_service.list_task_events(task_id)
         detail = self._task_to_dict(task)
         detail["events"] = [
@@ -306,9 +319,12 @@ class AgentManager:
             {
                 "task_id": task["task_id"],
                 "task_type": task["task_type"],
+                "title": task["presentation"]["title"],
+                "summary": task["presentation"]["summary"],
                 "status": task["status"],
                 "source_agent_id": task["source_agent_id"],
                 "requires_user_action": task["requires_user_action"],
+                "user_notified": task["user_notified"],
             }
             for task in tasks[:5]
         ]
@@ -365,6 +381,7 @@ class AgentManager:
                 "source_agent_name": source_agent.name,
                 "target_agent_name": target_agent.name,
             },
+            task_group="approval",
             requires_user_action=True,
             priority=10,
             permission_action="add_friend",
@@ -430,8 +447,10 @@ class AgentManager:
                 payload={
                     "accepted": True,
                     "message": response_message,
+                    "source_agent_name": responder_agent.name,
                     "friend_agent_id": responder_agent.id,
                 },
+                task_group="notification",
             )
             callback_result = self._attempt_response_callback(
                 target_agent=source_agent,
@@ -482,8 +501,10 @@ class AgentManager:
             payload={
                 "accepted": False,
                 "message": response_message,
+                "source_agent_name": responder_agent.name,
                 "friend_agent_id": responder_agent.id,
             },
+            task_group="notification",
         )
         callback_result = self._attempt_response_callback(
             target_agent=source_agent,
@@ -624,6 +645,10 @@ class AgentManager:
         if not runtime_agent:
             return
 
+        for item in inbox_summary["pending_task_preview"]:
+            if item["requires_user_action"] and not item["user_notified"]:
+                self.task_service.mark_task_notified(item["task_id"])
+
         runtime_agent.receive_system_message(
             message_type="system_event",
             event_type="task_inbox_summary",
@@ -657,6 +682,8 @@ class AgentManager:
             payload=payload,
         )
         if callback_result.success:
+            self.task_service.mark_task_delivered(response_task.id, reason="callback delivered")
+            self.task_service.mark_task_notified(response_task.id)
             self.task_service.update_task_status(
                 task_id=response_task.id,
                 status="push_success",
@@ -666,17 +693,16 @@ class AgentManager:
                     "status_code": callback_result.status_code,
                 },
             )
-            self.task_service.update_task_status(
+            self.task_service.mark_task_completed(
                 task_id=response_task.id,
-                status="done",
-                event_type="done",
-                event_payload={"reason": "回调成功，响应任务完成"},
+                reason="回调成功，响应任务完成",
             )
             return {"status": "push_success", "reason": callback_result.reason}
 
         fallback_status = "waiting_target_online"
         if target_agent.callback_enabled and target_agent.callback_url:
             fallback_status = "push_failed"
+            self.task_service.increment_retry(response_task.id, error_message=callback_result.reason)
 
         self.task_service.update_task_status(
             task_id=response_task.id,
@@ -710,6 +736,8 @@ class AgentManager:
                 payload=task.payload or {},
             )
             if callback_result.success:
+                self.task_service.mark_task_delivered(task.id, reason="callback retry delivered")
+                self.task_service.mark_task_notified(task.id)
                 self.task_service.update_task_status(
                     task_id=task.id,
                     status="push_success",
@@ -719,38 +747,49 @@ class AgentManager:
                         "status_code": callback_result.status_code,
                     },
                 )
-                self.task_service.update_task_status(
-                    task_id=task.id,
-                    status="done",
-                    event_type="done",
-                    event_payload={"reason": "上线补偿回调成功"},
-                )
+                self.task_service.mark_task_completed(task.id, reason="上线补偿回调成功")
                 results.append({"task_id": task.id, "status": "push_success"})
             else:
+                fallback_status = "waiting_target_online"
+                if target_agent.callback_enabled and target_agent.callback_url:
+                    fallback_status = "push_failed"
+                    self.task_service.increment_retry(task.id, error_message=callback_result.reason)
                 self.task_service.update_task_status(
                     task_id=task.id,
-                    status="push_failed",
-                    event_type="push_failed",
+                    status=fallback_status,
+                    event_type=fallback_status,
                     event_payload={
                         "reason": callback_result.reason,
                         "status_code": callback_result.status_code,
                     },
                 )
-                results.append({"task_id": task.id, "status": "push_failed"})
+                results.append({"task_id": task.id, "status": fallback_status})
         return results
 
     @staticmethod
     def _task_to_dict(task: AgentTask) -> dict:
         """把任务 ORM 对象转换成适合返回给 Agent 的结构。"""
+        presentation = TaskPresentationService().build_task_view(task)
         return {
             "task_id": task.id,
             "task_type": task.task_type,
+            "task_group": task.task_group,
             "status": task.status,
             "source_agent_id": task.source_agent_id,
             "target_agent_id": task.target_agent_id,
             "payload": task.payload,
             "requires_user_action": task.requires_user_action,
+            "user_notified": task.user_notified,
             "priority": task.priority,
+            "retry_count": task.retry_count,
+            "max_retries": task.max_retries,
+            "last_error": task.last_error,
+            "read_at": str(task.read_at) if task.read_at else None,
+            "last_delivered_at": str(task.last_delivered_at) if task.last_delivered_at else None,
+            "user_notified_at": str(task.user_notified_at) if task.user_notified_at else None,
+            "completed_at": str(task.completed_at) if task.completed_at else None,
+            "cancelled_at": str(task.cancelled_at) if task.cancelled_at else None,
             "created_at": str(task.created_at),
             "updated_at": str(task.updated_at),
+            "presentation": presentation,
         }

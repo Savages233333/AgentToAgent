@@ -45,6 +45,10 @@ class _ReadPermissionInput(_ConnectionTargetInput):
 
 class _ListMyTasksInput(BaseModel):
     include_completed: bool = Field(default=False, description="是否包含已完成任务")
+    view: str = Field(
+        default="inbox",
+        description="任务视图类型，可选 inbox / notifications / history / failed / all",
+    )
 
 
 class _GetTaskDetailInput(BaseModel):
@@ -275,7 +279,7 @@ class ListMyTasksTool(BaseTool):
     agent_id: int = Field(exclude=True)
     db_session_func: Optional[Callable[[], Session]] = None
 
-    def _run(self, include_completed: bool = False) -> str:
+    def _run(self, include_completed: bool = False, view: str = "inbox") -> str:
         """列出当前 Agent 的任务收件箱。"""
         from agent_to_agent.services.agentManager import AgentManager
 
@@ -285,13 +289,14 @@ class ListMyTasksTool(BaseTool):
             result = manager.list_my_tasks(
                 target_agent_id=self.agent_id,
                 include_completed=include_completed,
+                view=view,
             )
             return str(result)
         finally:
             db.close()
 
-    async def _arun(self, include_completed: bool = False) -> str:
-        return self._run(include_completed=include_completed)
+    async def _arun(self, include_completed: bool = False, view: str = "inbox") -> str:
+        return self._run(include_completed=include_completed, view=view)
 
 
 class GetTaskDetailTool(BaseTool):
