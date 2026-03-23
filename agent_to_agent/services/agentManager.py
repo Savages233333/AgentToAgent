@@ -8,6 +8,7 @@ from agent_to_agent.models.agentRequest import AgentRequest
 from agent_to_agent.services.graphAgentService import GraphAgentNode, GraphAgentService
 from agent_to_agent.services.permissionFileService import PermissionFileService
 from agent_to_agent.services.permissionService import PermissionService
+from agent_to_agent.services.agentTaskService import AgentTaskService
 
 class AgentManager:
     def __init__(self, db: Session):
@@ -23,6 +24,7 @@ class AgentManager:
             permission_file_service=self.permission_file_service,
             graph_service=self.graph_service,
         )
+        self.task_service = AgentTaskService(db=self.db)
 
     def agentRegister(self, req: AgentRequest):
         """
@@ -212,3 +214,71 @@ class AgentManager:
             "source_agent_id": decision.source_agent_id,
             "target_agent_id": decision.target_agent_id,
         }
+
+    def create_task(
+        self,
+        task_type: str,
+        source_agent_id: int,
+        target_agent_id: int,
+        payload: dict | None = None,
+        requires_user_action: bool = False,
+        priority: int = 0,
+        status: str = "pending",
+    ) -> dict:
+        """创建一条 Agent 任务并立即持久化。"""
+        task = self.task_service.create_task(
+            task_type=task_type,
+            source_agent_id=source_agent_id,
+            target_agent_id=target_agent_id,
+            payload=payload,
+            requires_user_action=requires_user_action,
+            priority=priority,
+            status=status,
+        )
+        self.db.commit()
+        self.db.refresh(task)
+        return {
+            "task_id": task.id,
+            "task_type": task.task_type,
+            "status": task.status,
+            "source_agent_id": task.source_agent_id,
+            "target_agent_id": task.target_agent_id,
+            "requires_user_action": task.requires_user_action,
+        }
+
+    def update_task_status(
+        self,
+        task_id: int,
+        status: str,
+        event_type: str = "status_changed",
+        event_payload: dict | None = None,
+    ) -> dict:
+        """更新任务状态并记录对应事件。"""
+        task = self.task_service.update_task_status(
+            task_id=task_id,
+            status=status,
+            event_type=event_type,
+            event_payload=event_payload,
+        )
+        self.db.commit()
+        self.db.refresh(task)
+        return {
+            "task_id": task.id,
+            "status": task.status,
+        }
+
+    def list_pending_tasks(self, target_agent_id: int) -> list[dict]:
+        """查询目标 Agent 的待处理任务列表。"""
+        tasks = self.task_service.list_pending_tasks_for_agent(target_agent_id)
+        return [
+            {
+                "task_id": task.id,
+                "task_type": task.task_type,
+                "status": task.status,
+                "source_agent_id": task.source_agent_id,
+                "target_agent_id": task.target_agent_id,
+                "priority": task.priority,
+                "requires_user_action": task.requires_user_action,
+            }
+            for task in tasks
+        ]
