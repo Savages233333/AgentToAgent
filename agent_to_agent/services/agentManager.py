@@ -9,6 +9,7 @@ from agent_to_agent.services.graphAgentService import GraphAgentNode, GraphAgent
 from agent_to_agent.services.permissionFileService import PermissionFileService
 from agent_to_agent.services.permissionService import PermissionService
 from agent_to_agent.services.agentTaskService import AgentTaskService
+from agent_to_agent.services.agentTaskDispatchService import AgentTaskDispatchService
 
 class AgentManager:
     def __init__(self, db: Session):
@@ -25,6 +26,11 @@ class AgentManager:
             graph_service=self.graph_service,
         )
         self.task_service = AgentTaskService(db=self.db)
+        self.task_dispatch_service = AgentTaskDispatchService(
+            db=self.db,
+            task_service=self.task_service,
+            permission_service=self.permission_service,
+        )
 
     def agentRegister(self, req: AgentRequest):
         """
@@ -143,9 +149,16 @@ class AgentManager:
                 new_status="wake",
                 reason="agent connected",
             ))
+            delivered_tasks = self.task_dispatch_service.deliver_pending_tasks_on_connect(
+                target_agent_id=agent.id,
+            )
             self.db.commit()
             self.db.refresh(agent)
-            return {"id": agent.id, "status": agent.status}
+            return {
+                "id": agent.id,
+                "status": agent.status,
+                "delivered_tasks": delivered_tasks,
+            }
 
         except HTTPException:
             raise
@@ -282,3 +295,31 @@ class AgentManager:
             }
             for task in tasks
         ]
+
+    def dispatch_task(
+        self,
+        task_type: str,
+        source_agent_id: int,
+        target_agent_id: int,
+        payload: dict | None = None,
+        requires_user_action: bool = False,
+        priority: int = 0,
+        permission_action: str = "assign_task",
+    ) -> dict:
+        """按目标 Agent 当前状态投递任务，并返回统一的送达结果。"""
+        result = self.task_dispatch_service.dispatch_task(
+            task_type=task_type,
+            source_agent_id=source_agent_id,
+            target_agent_id=target_agent_id,
+            payload=payload,
+            requires_user_action=requires_user_action,
+            priority=priority,
+            permission_action=permission_action,
+        )
+        self.db.commit()
+        return {
+            "task_id": result.task_id,
+            "delivery_status": result.delivery_status,
+            "target_status": result.target_status,
+            "reason": result.reason,
+        }
