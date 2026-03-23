@@ -4,6 +4,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     database_url: str = Field(alias="DATABASE_URL")
+    neo4j_uri: str | None = Field(default=None, alias="NEO4J_URI")
+    neo4j_username: str | None = Field(default=None, alias="NEO4J_USERNAME")
+    neo4j_password: str | None = Field(default=None, alias="NEO4J_PASSWORD")
+    neo4j_database: str = Field(default="neo4j", alias="NEO4J_DATABASE")
 
     model_config = SettingsConfigDict(
         env_file=".env",

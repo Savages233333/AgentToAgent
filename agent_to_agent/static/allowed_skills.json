@@ -1,0 +1,14 @@
+{
+  "allowed_domains": [
+    "lightmake.site"
+  ],
+  "skills": {
+    "sql-toolkit": {
+      "name": "SQL Toolkit",
+      "source": "skillhub",
+      "version": "1.0.0",
+      "download_url": "https://lightmake.site/api/v1/download?slug=sql-toolkit",
+      "sha256": null
+    }
+  }
+}
