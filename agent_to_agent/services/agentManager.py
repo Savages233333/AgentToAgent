@@ -7,15 +7,22 @@ from agent_to_agent.factory.agentFactory import AgentFactory
 from agent_to_agent.models.agentRequest import AgentRequest
 from agent_to_agent.services.graphAgentService import GraphAgentNode, GraphAgentService
 from agent_to_agent.services.permissionFileService import PermissionFileService
+from agent_to_agent.services.permissionService import PermissionService
 
 class AgentManager:
     def __init__(self, db: Session):
+        """初始化 Agent 业务管理器及其依赖服务。"""
         self.db = db
         self.agent_factory = AgentFactory()
         from agent_to_agent.models import get_db
         self.db_session_func = get_db
         self.graph_service = GraphAgentService()
         self.permission_file_service = PermissionFileService()
+        self.permission_service = PermissionService(
+            db=self.db,
+            permission_file_service=self.permission_file_service,
+            graph_service=self.graph_service,
+        )
 
     def agentRegister(self, req: AgentRequest):
         """
@@ -145,6 +152,7 @@ class AgentManager:
             raise HTTPException(status_code=500, detail=str(e))
 
     def use(self, req: AgentRequest):
+        """调用已激活的运行时 Agent 执行一次用户请求。"""
         # 查询 agent 记录
         agent_record = self.db.query(AgentInfo).filter(
             AgentInfo.id == req.agent_id
@@ -187,3 +195,20 @@ class AgentManager:
 
     def destroy(self, account_id):
         pass
+
+    def check_permission(self, source_agent_id: int, target_agent_id: int, action: str) -> dict:
+        """对外提供统一的权限判定结果，供接口层或任务流直接调用。"""
+        # 业务层统一权限查询入口，后续接口/任务流直接复用这里的输出结构。
+        decision = self.permission_service.check(
+            source_agent_id=source_agent_id,
+            target_agent_id=target_agent_id,
+            action=action,
+        )
+        return {
+            "action": decision.action,
+            "result": decision.result,
+            "reason": decision.reason,
+            "relation": decision.relation,
+            "source_agent_id": decision.source_agent_id,
+            "target_agent_id": decision.target_agent_id,
+        }
