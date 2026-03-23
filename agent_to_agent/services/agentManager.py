@@ -166,6 +166,11 @@ class AgentManager:
             self.db.commit()
             self.db.refresh(agent)
             runtime_agent = self.agent_factory.get(agent.user_id)
+            if runtime_agent and inbox_summary["pending_task_count"] > 0:
+                self._push_inbox_summary_to_agent(
+                    target_agent=agent,
+                    inbox_summary=inbox_summary,
+                )
             return {
                 "id": agent.id,
                 "status": agent.status,
@@ -611,6 +616,26 @@ class AgentManager:
             payload=payload,
             from_agent_id=from_agent.id,
             from_agent_name=from_agent.name,
+        )
+
+    def _push_inbox_summary_to_agent(self, target_agent: AgentInfo, inbox_summary: dict) -> None:
+        """在 Agent 上线后，把待处理任务摘要注入其内部消息上下文。"""
+        runtime_agent = self.agent_factory.get(target_agent.user_id)
+        if not runtime_agent:
+            return
+
+        runtime_agent.receive_system_message(
+            message_type="system_event",
+            event_type="task_inbox_summary",
+            payload={
+                "pending_task_count": inbox_summary["pending_task_count"],
+                "pending_task_preview": inbox_summary["pending_task_preview"],
+                "instruction": (
+                    "请优先告诉用户当前有哪些待处理任务，尤其要指出需要用户处理的任务，"
+                    "并提醒用户可以让你继续查看或处理这些任务。"
+                ),
+            },
+            from_agent_name="system",
         )
 
     def _attempt_response_callback(self, target_agent: AgentInfo, response_task_id: int | None, payload: dict) -> dict:
