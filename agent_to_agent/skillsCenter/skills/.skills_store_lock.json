@@ -1,11 +1,13 @@
 {
-  "version": 1,
+  "version": 2,
   "skills": {
     "sql-toolkit": {
-      "name": "SQL Toolkit",
+      "name": "sql-toolkit",
       "zip_url": "https://lightmake.site/api/v1/download?slug=sql-toolkit",
       "source": "skillhub",
-      "version": "1.0.0"
+      "version": "1.0.0",
+      "sha256": null,
+      "installed_at": "2026-03-23T15:16:52.068480+00:00"
     }
   }
 }
