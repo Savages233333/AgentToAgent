@@ -45,6 +45,17 @@ class GraphAgentService:
                 level_rank=node.level_rank,
                 manager_agent_id=node.manager_agent_id,
             )
+            if node.manager_agent_id is not None:
+                # 如果注册时已带直属上级，则同步建立 REPORTS_TO 关系。
+                session.run(
+                    """
+                    MATCH (child:Agent {agent_id: $agent_id})
+                    MERGE (manager:Agent {agent_id: $manager_agent_id})
+                    MERGE (child)-[:REPORTS_TO]->(manager)
+                    """,
+                    agent_id=node.agent_id,
+                    manager_agent_id=node.manager_agent_id,
+                )
         driver.close()
 
     def delete_agent_node(self, agent_id: int) -> None:
@@ -87,6 +98,56 @@ class GraphAgentService:
             ).single()
         driver.close()
         return bool(record["exists"]) if record else False
+
+    def create_pending_request(self, source_agent_id: int, target_agent_id: int, task_id: int) -> None:
+        """在图数据库中记录一条待处理的连接申请关系。"""
+        driver = self._build_driver()
+        query = """
+        MATCH (source:Agent {agent_id: $source_agent_id})
+        MATCH (target:Agent {agent_id: $target_agent_id})
+        MERGE (source)-[r:PENDING_REQUEST]->(target)
+        SET r.task_id = $task_id
+        """
+        with driver.session(database=self._database) as session:
+            session.run(
+                query,
+                source_agent_id=source_agent_id,
+                target_agent_id=target_agent_id,
+                task_id=task_id,
+            )
+        driver.close()
+
+    def delete_pending_request(self, source_agent_id: int, target_agent_id: int) -> None:
+        """删除图数据库中的待处理连接申请关系。"""
+        driver = self._build_driver()
+        query = """
+        MATCH (:Agent {agent_id: $source_agent_id})-[r:PENDING_REQUEST]->(:Agent {agent_id: $target_agent_id})
+        DELETE r
+        """
+        with driver.session(database=self._database) as session:
+            session.run(
+                query,
+                source_agent_id=source_agent_id,
+                target_agent_id=target_agent_id,
+            )
+        driver.close()
+
+    def create_friend_relation(self, source_agent_id: int, target_agent_id: int) -> None:
+        """在图数据库中建立双向好友关系。"""
+        driver = self._build_driver()
+        query = """
+        MATCH (source:Agent {agent_id: $source_agent_id})
+        MATCH (target:Agent {agent_id: $target_agent_id})
+        MERGE (source)-[:FRIEND]->(target)
+        MERGE (target)-[:FRIEND]->(source)
+        """
+        with driver.session(database=self._database) as session:
+            session.run(
+                query,
+                source_agent_id=source_agent_id,
+                target_agent_id=target_agent_id,
+            )
+        driver.close()
 
     def _build_driver(self):
         """构造 Neo4j 驱动；配置缺失或依赖未安装时直接报错。"""

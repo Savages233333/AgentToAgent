@@ -113,6 +113,53 @@ class AgentTaskDispatchService:
                 )
         return delivered
 
+    def dispatch_system_task(
+        self,
+        task_type: str,
+        source_agent_id: int,
+        target_agent_id: int,
+        payload: dict | None = None,
+        requires_user_action: bool = False,
+        priority: int = 0,
+    ) -> TaskDispatchResult:
+        """投递系统生成的通知类任务，跳过权限判定，只按目标状态决定送达策略。"""
+        target_agent = self._get_agent(target_agent_id)
+        if target_agent.status == "destroy":
+            return TaskDispatchResult(
+                task_id=None,
+                delivery_status="target_destroyed",
+                target_status=target_agent.status,
+                reason="目标 Agent 已销毁，无法接收系统通知",
+            )
+
+        initial_status, delivery_status, reason = self._resolve_system_delivery_plan(
+            target_status=target_agent.status,
+        )
+        task = self.task_service.create_task(
+            task_type=task_type,
+            source_agent_id=source_agent_id,
+            target_agent_id=target_agent_id,
+            payload=payload,
+            requires_user_action=requires_user_action,
+            priority=priority,
+            status=initial_status,
+        )
+        self.task_service.add_task_event(
+            task_id=task.id,
+            event_type=delivery_status,
+            event_payload={
+                "reason": reason,
+                "target_status": target_agent.status,
+                "system_task": True,
+            },
+        )
+        return TaskDispatchResult(
+            task_id=task.id,
+            delivery_status=delivery_status,
+            target_status=target_agent.status,
+            reason=reason,
+        )
+
     def _get_agent(self, agent_id: int) -> AgentInfo:
         """读取指定 Agent 的当前生命周期状态。"""
         agent = self.db.query(AgentInfo).filter(AgentInfo.id == agent_id).first()
@@ -140,3 +187,12 @@ class AgentTaskDispatchService:
             return "waiting_target_online", "waiting_target_online", "目标 Agent 尚未激活，任务已记录等待上线"
 
         return "queued", "queued", "任务已入队等待后续处理"
+
+    @staticmethod
+    def _resolve_system_delivery_plan(target_status: str) -> tuple[str, str, str]:
+        """根据目标状态决定系统通知任务的送达策略。"""
+        if target_status in {"wake", "active"}:
+            return "delivered", "delivered", "目标 Agent 在线，系统通知已送达"
+        if target_status in {"sleep", "new"}:
+            return "waiting_target_online", "waiting_target_online", "目标 Agent 未在线，系统通知等待其上线"
+        return "queued", "queued", "系统通知已入队等待后续处理"

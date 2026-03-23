@@ -2,6 +2,7 @@ from datetime import datetime,timezone
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from agent_to_agent.models.agentInfo import AgentInfo
+from agent_to_agent.models.agentTask import AgentTask
 from agent_to_agent.models.agentStateHistory import AgentStateHistory
 from agent_to_agent.factory.agentFactory import AgentFactory
 from agent_to_agent.models.agentRequest import AgentRequest
@@ -323,3 +324,188 @@ class AgentManager:
             "target_status": result.target_status,
             "reason": result.reason,
         }
+
+    def request_connection(
+        self,
+        source_agent_id: int,
+        target_agent_id: int,
+        message: str | None = None,
+    ) -> dict:
+        """发起一条 Agent 连接请求，并按权限和目标状态决定后续动作。"""
+        if source_agent_id == target_agent_id:
+            raise HTTPException(status_code=400, detail="不能向自己发起连接请求")
+
+        source_agent = self._get_agent_or_404(source_agent_id)
+        target_agent = self._get_agent_or_404(target_agent_id)
+        decision = self.permission_service.check(
+            source_agent_id=source_agent_id,
+            target_agent_id=target_agent_id,
+            action="add_friend",
+        )
+
+        if decision.result == "deny":
+            return {
+                "action": "request_connection",
+                "result": "deny",
+                "reason": decision.reason,
+                "source_agent_id": source_agent_id,
+                "target_agent_id": target_agent_id,
+            }
+
+        if decision.result == "allow":
+            self._establish_friend_connection(source_agent_id, target_agent_id)
+            self.db.commit()
+            return {
+                "action": "request_connection",
+                "result": "allow",
+                "reason": "目标 Agent 允许直接建立连接",
+                "source_agent_id": source_agent_id,
+                "target_agent_id": target_agent_id,
+                "target_status": target_agent.status,
+            }
+
+        dispatch_result = self.task_dispatch_service.dispatch_task(
+            task_type="friend_request",
+            source_agent_id=source_agent_id,
+            target_agent_id=target_agent_id,
+            payload={
+                "message": message,
+                "source_agent_name": source_agent.name,
+                "target_agent_name": target_agent.name,
+            },
+            requires_user_action=True,
+            priority=10,
+            permission_action="add_friend",
+        )
+
+        if dispatch_result.task_id is not None:
+            self.graph_service.create_pending_request(
+                source_agent_id=source_agent_id,
+                target_agent_id=target_agent_id,
+                task_id=dispatch_result.task_id,
+            )
+
+        self.db.commit()
+        return {
+            "action": "request_connection",
+            "result": "request",
+            "task_id": dispatch_result.task_id,
+            "delivery_status": dispatch_result.delivery_status,
+            "target_status": dispatch_result.target_status,
+            "reason": dispatch_result.reason,
+            "source_agent_id": source_agent_id,
+            "target_agent_id": target_agent_id,
+        }
+
+    def respond_connection_request(
+        self,
+        task_id: int,
+        responder_agent_id: int,
+        accepted: bool,
+        response_message: str | None = None,
+    ) -> dict:
+        """处理目标 Agent 对连接申请的同意或拒绝。"""
+        task = self.task_service.get_task(task_id)
+        if task.task_type != "friend_request":
+            raise HTTPException(status_code=400, detail="该任务不是连接申请任务")
+        if task.target_agent_id != responder_agent_id:
+            raise HTTPException(status_code=403, detail="当前 Agent 无权响应该连接申请")
+        if task.status in {"accepted", "rejected", "done"}:
+            raise HTTPException(status_code=400, detail="该连接申请已经处理完成")
+
+        source_agent = self._get_agent_or_404(task.source_agent_id)
+        responder_agent = self._get_agent_or_404(responder_agent_id)
+
+        if accepted:
+            self._establish_friend_connection(source_agent.id, responder_agent.id)
+            self.graph_service.delete_pending_request(source_agent.id, responder_agent.id)
+            self.task_service.update_task_status(
+                task_id=task.id,
+                status="accepted",
+                event_type="accepted",
+                event_payload={"message": response_message},
+            )
+            self.task_service.update_task_status(
+                task_id=task.id,
+                status="done",
+                event_type="done",
+                event_payload={"message": "friend request completed"},
+            )
+            response_dispatch = self.task_dispatch_service.dispatch_system_task(
+                task_type="friend_request_response",
+                source_agent_id=responder_agent.id,
+                target_agent_id=source_agent.id,
+                payload={
+                    "accepted": True,
+                    "message": response_message,
+                    "friend_agent_id": responder_agent.id,
+                },
+            )
+            self.db.commit()
+            return {
+                "task_id": task.id,
+                "result": "accepted",
+                "response_delivery_status": response_dispatch.delivery_status,
+                "reason": "连接申请已同意，双方已建立好友关系",
+            }
+
+        self.graph_service.delete_pending_request(source_agent.id, responder_agent.id)
+        self.task_service.update_task_status(
+            task_id=task.id,
+            status="rejected",
+            event_type="rejected",
+            event_payload={"message": response_message},
+        )
+        response_dispatch = self.task_dispatch_service.dispatch_system_task(
+            task_type="friend_request_response",
+            source_agent_id=responder_agent.id,
+            target_agent_id=source_agent.id,
+            payload={
+                "accepted": False,
+                "message": response_message,
+                "friend_agent_id": responder_agent.id,
+            },
+        )
+        self.db.commit()
+        return {
+            "task_id": task.id,
+            "result": "rejected",
+            "response_delivery_status": response_dispatch.delivery_status,
+            "reason": "连接申请已拒绝",
+        }
+
+    def list_connection_requests(self, target_agent_id: int) -> list[dict]:
+        """查询目标 Agent 当前待处理的连接申请任务。"""
+        tasks = (
+            self.db.query(AgentTask)
+            .filter(
+                AgentTask.target_agent_id == target_agent_id,
+                AgentTask.task_type == "friend_request",
+                AgentTask.status.in_(["waiting_user", "waiting_target_online", "delivered"]),
+            )
+            .order_by(AgentTask.created_at.asc())
+            .all()
+        )
+        return [
+            {
+                "task_id": task.id,
+                "source_agent_id": task.source_agent_id,
+                "target_agent_id": task.target_agent_id,
+                "status": task.status,
+                "payload": task.payload,
+            }
+            for task in tasks
+        ]
+
+    def _establish_friend_connection(self, source_agent_id: int, target_agent_id: int) -> None:
+        """建立双向好友关系，并同步到图数据库与权限文件。"""
+        self.graph_service.create_friend_relation(source_agent_id, target_agent_id)
+        self.permission_file_service.add_friend(source_agent_id, target_agent_id)
+        self.permission_file_service.add_friend(target_agent_id, source_agent_id)
+
+    def _get_agent_or_404(self, agent_id: int) -> AgentInfo:
+        """读取指定 Agent，不存在时抛出 HTTP 404。"""
+        agent = self.db.query(AgentInfo).filter(AgentInfo.id == agent_id).first()
+        if not agent:
+            raise HTTPException(status_code=404, detail=f"agent 不存在：{agent_id}")
+        return agent

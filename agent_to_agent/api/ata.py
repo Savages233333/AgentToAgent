@@ -3,6 +3,10 @@ from sqlalchemy.orm import Session
 from agent_to_agent.models import get_db
 from agent_to_agent.services.agentManager import AgentManager
 from agent_to_agent.models.agentRequest import AgentRequest
+from agent_to_agent.models.agentConnectionRequest import (
+    AgentConnectionRequest,
+    AgentConnectionResponseRequest,
+)
 
 router = APIRouter()
 
@@ -38,6 +42,34 @@ def connect(req: AgentRequest, db: Session = Depends(get_db)):
 def use(req: AgentRequest, db: Session = Depends(get_db)):
     """向处于 wake 状态的 agent 发送消息并返回推理结果。"""
     return AgentManager(db).use(req)
+
+
+@router.post("/connection/request")
+def request_connection(req: AgentConnectionRequest, db: Session = Depends(get_db)):
+    """发起 Agent 连接申请，并按权限与生命周期状态处理。"""
+    return AgentManager(db).request_connection(
+        source_agent_id=req.source_agent_id,
+        target_agent_id=req.target_agent_id,
+        message=req.message,
+    )
+
+
+@router.post("/connection/respond")
+def respond_connection(req: AgentConnectionResponseRequest, db: Session = Depends(get_db)):
+    """处理目标 Agent 对连接申请的同意或拒绝。"""
+    return AgentManager(db).respond_connection_request(
+        task_id=req.task_id,
+        responder_agent_id=req.responder_agent_id,
+        accepted=req.accepted,
+        response_message=req.response_message,
+    )
+
+
+@router.get("/connection/requests/{target_agent_id}")
+def list_connection_requests(target_agent_id: int, db: Session = Depends(get_db)):
+    """查询目标 Agent 当前待处理的连接申请。"""
+    return AgentManager(db).list_connection_requests(target_agent_id)
+
 
 @router.post("/destroy/{account_id}")
 def destroy(account_id: int, db: Session = Depends(get_db)):

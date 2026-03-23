@@ -76,6 +76,29 @@ class PermissionFileService:
         except json.JSONDecodeError as exc:
             raise ValueError(f"agent {agent_id} 的权限文件不是合法 JSON") from exc
 
+    def add_friend(self, agent_id: int, friend_agent_id: int) -> None:
+        """把指定好友写入 Agent 的权限文件关系列表。"""
+        payload = self.load_permission_file(agent_id)
+        friends = payload.setdefault("relations", {}).setdefault("friends", [])
+        if friend_agent_id not in friends:
+            friends.append(friend_agent_id)
+            self._save_permission_file(agent_id, payload)
+
+    def remove_friend(self, agent_id: int, friend_agent_id: int) -> None:
+        """把指定好友从 Agent 的权限文件关系列表中移除。"""
+        payload = self.load_permission_file(agent_id)
+        friends = payload.setdefault("relations", {}).setdefault("friends", [])
+        if friend_agent_id in friends:
+            friends.remove(friend_agent_id)
+            self._save_permission_file(agent_id, payload)
+
+    def _save_permission_file(self, agent_id: int, payload: dict) -> None:
+        """把更新后的权限内容写回到权限文件。"""
+        self._file_path(agent_id).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     @staticmethod
     def _file_path(agent_id: int) -> Path:
         return _PERMISSION_DIR / f"{agent_id}.permission.json"
