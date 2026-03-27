@@ -2,5 +2,9 @@
   "ownerId": "kn7f6g2r31qsb1ts8cf5x7rpk180fn9j",
   "slug": "sql-toolkit",
   "version": "1.0.0",
-  "publishedAt": 1770155077543
+  "publishedAt": 1770155077543,
+  "entrypoint": {
+    "type": "python",
+    "script": "scripts/run.py"
+  }
 }

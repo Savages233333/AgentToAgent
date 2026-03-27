@@ -2,10 +2,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
 
-from agent_to_agent.utils import MarkdownSkillUtil
+from agent_to_agent.utils import ExecutableSkillTool, MarkdownSkillUtil
 
 
 
@@ -114,17 +113,19 @@ class SkillCenter:
             return {"version": 1, "skills": {}}
 
     @staticmethod
-    def _load_local(slug: str) -> MarkdownSkillUtil | None:
+    def _load_local(slug: str) -> BaseTool | None:
         """
-        从本地 SKILL.md 构建 MarkdownSkillUtil。
+        从本地 skill 目录构建工具实例。
 
         Args:
             slug: skill 标识符，对应 skillsCenter/skills/<slug>/ 目录。
 
         Returns:
-            MarkdownSkillUtil 实例；目录或 SKILL.md 不存在时返回 None。
+            BaseTool 实例；目录或 SKILL.md 不存在时返回 None。
         """
-        skill_md = _SKILLS_DIR / slug / "SKILL.md"
+        skill_dir = _SKILLS_DIR / slug
+        skill_md = skill_dir / "SKILL.md"
+        meta_json = skill_dir / "_meta.json"
         if not skill_md.exists():
             return None
 
@@ -142,5 +143,24 @@ class SkillCenter:
 
         if not name or not description:
             return None
+
+        meta = {}
+        if meta_json.exists():
+            try:
+                meta = json.loads(meta_json.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                meta = {}
+
+        entrypoint = meta.get("entrypoint")
+        if isinstance(entrypoint, dict):
+            entry_type = entrypoint.get("type")
+            script = entrypoint.get("script")
+            if entry_type == "python" and isinstance(script, str) and script.strip():
+                return ExecutableSkillTool(
+                    name=name,
+                    description=description,
+                    skill_dir=str(skill_dir),
+                    script_path=script,
+                )
 
         return MarkdownSkillUtil(name=name, description=description, skill_content=content)
